@@ -1364,10 +1364,15 @@
             <div id="batchLogin" class="tab-content hidden">
                 <div class="batch-header">
                     <h3>批量验证账户</h3>
-                    <p class="batch-description">每行一个账户，格式：邮箱----密码----刷新令牌----客户端ID</p>
+                    <p class="batch-description">每行一个账户，支持以下格式：</p>
+                    <div style="background: #f8fafc; padding: 10px; border-radius: 6px; margin: 8px 0; font-size: 13px; color: #475569;">
+                        <p style="margin: 0 0 4px 0;">📝 <strong>格式1:</strong> 邮箱----密码----刷新令牌----客户端ID</p>
+                        <p style="margin: 0;">📝 <strong>格式2:</strong> 邮箱----密码----客户端ID----刷新令牌</p>
+                        <p style="margin: 8px 0 0 0; font-size: 12px; color: #64748b;">💡 系统会自动识别刷新令牌（通常以"M.C"开头）</p>
+                    </div>
                 </div>
                 <div class="input-group">
-                    <textarea id="batchAccounts" rows="8" placeholder="example@outlook.com----password----refresh_token----client_id"></textarea>
+                    <textarea id="batchAccounts" rows="8" placeholder="example@outlook.com----password----refresh_token----client_id&#10;或&#10;example@outlook.com----password----client_id----refresh_token"></textarea>
                 </div>
                 <button class="btn btn-primary btn-with-icon" onclick="verifyBatchAccounts()">
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
@@ -1691,6 +1696,46 @@
             }
         }
 
+        // 智能解析账户信息，支持多种格式
+        function parseAccountLine(line) {
+            const parts = line.split('----').map(p => p.trim());
+            if (parts.length !== 4) {
+                return null;
+            }
+            
+            const [email, password, field3, field4] = parts;
+            
+            // 智能判断刷新令牌位置（基于M.C开头规则）
+            let refreshToken, clientId;
+            
+            if (field3.startsWith('M.C')) {
+                // 格式: 邮箱----密码----刷新令牌----客户端ID
+                refreshToken = field3;
+                clientId = field4;
+            } else if (field4.startsWith('M.C')) {
+                // 格式: 邮箱----密码----客户端ID----刷新令牌
+                refreshToken = field4;
+                clientId = field3;
+            } else {
+                // 如果都不是M.C开头，尝试其他启发式判断
+                // 刷新令牌通常比客户端ID更长
+                if (field3.length > field4.length) {
+                    refreshToken = field3;
+                    clientId = field4;
+                } else {
+                    refreshToken = field4;
+                    clientId = field3;
+                }
+            }
+            
+            return {
+                email,
+                refresh_token: refreshToken,
+                client_id: clientId,
+                original_line: line // 保留原始行用于调试
+            };
+        }
+
         async function verifyBatchAccounts() {
             const batchText = document.getElementById('batchAccounts').value.trim();
             if (!batchText) {
@@ -1704,20 +1749,45 @@
             
             // 准备批量验证的账户列表
             const accounts = [];
-            for (const line of lines) {
-                const parts = line.split('----').map(p => p.trim());
-                if (parts.length !== 4) continue;
+            const parseErrors = [];
+            
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const parsed = parseAccountLine(line);
                 
-                const [email, _, refreshToken, clientId] = parts;
-                accounts.push({
-                    email,
-                    refresh_token: refreshToken,
-                    client_id: clientId
-                });
+                if (parsed) {
+                    accounts.push(parsed);
+                } else {
+                    parseErrors.push(`第${i + 1}行格式错误: ${line}`);
+                }
+            }
+            
+            // 如果有解析错误，显示详细提示
+            if (parseErrors.length > 0) {
+                console.warn('部分行解析失败:', parseErrors);
+                if (parseErrors.length === lines.length) {
+                    // 所有行都解析失败
+                    const errorDetails = parseErrors.slice(0, 3).join('<br>');
+                    const moreErrors = parseErrors.length > 3 ? `<br>... 还有 ${parseErrors.length - 3} 行错误` : '';
+                    resultList.innerHTML = `<div class="verification-empty">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line>
+                        </svg>
+                        <p>无法解析账户信息，请检查格式</p>
+                        <details style="margin-top: 10px; font-size: 12px; color: #ef4444;">
+                            <summary>查看详细错误</summary>
+                            <div style="margin-top: 5px; text-align: left;">${errorDetails}${moreErrors}</div>
+                        </details>
+                    </div>`;
+                    return;
+                } else {
+                    // 部分行解析失败，继续处理成功的行
+                    showError(`${parseErrors.length} 行格式错误，已跳过。成功解析 ${accounts.length} 个账户。`);
+                }
             }
             
             if (accounts.length === 0) {
-                resultList.innerHTML = '<div class="verification-empty"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><p>无法解析账户信息，请检查格式</p></div>';
+                resultList.innerHTML = '<div class="verification-empty"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><p>无有效账户信息</p></div>';
                 return;
             }
             
