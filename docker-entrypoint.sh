@@ -9,8 +9,8 @@ WORKERS=${WORKERS:-1}
 mkdir -p /app/data
 
 # 如果accounts.json不存在，创建空的
-if [ ! -f "/app/accounts.json" ]; then
-    echo "{}" > /app/accounts.json
+if [ ! -f "/app/data/accounts.json" ]; then
+    echo "{}" > /app/data/accounts.json
 fi
 
 # 不再需要更改文件所有权，因为我们使用root用户运行容器

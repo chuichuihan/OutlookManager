@@ -30,7 +30,7 @@ from config import verify_admin_password, get_config_info
 # 配置常量
 # ============================================================================
 
-ACCOUNTS_FILE = "accounts.json"
+ACCOUNTS_FILE = "data/accounts.json"
 TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
 IMAP_SERVER = "outlook.live.com"
 IMAP_PORT = 993
