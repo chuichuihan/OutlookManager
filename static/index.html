@@ -1426,6 +1426,31 @@
                         </label>
                     </div>
                 </div>
+                <!-- 站点使用标记/查询工具条 -->
+                <div class="account-toolbar" style="margin-top:10px; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+                    <div class="input-group" style="min-width:220px; margin-bottom:0;">
+                        <label>站点标识</label>
+                        <input type="text" id="usageSite" placeholder="如 twitter / tiktok / 任意自定义">
+                    </div>
+                    <div class="input-group" style="min-width:200px; margin-bottom:0;">
+                        <label>标记状态</label>
+                        <select id="usageStatusSelect" class="account-select">
+                            <option value="registered">registered（已注册）</option>
+                            <option value="pending">pending（进行中）</option>
+                            <option value="failed">failed（失败）</option>
+                            <option value="blocked">blocked（受限）</option>
+                        </select>
+                    </div>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <button class="btn btn-primary" onclick="markUsageForSelected()">为选中标记</button>
+                        <button class="btn btn-secondary" onclick="queryUsageForSite()">查询站点</button>
+                        <button class="btn btn-secondary" onclick="showUsageSitesStats()">站点统计</button>
+                        <button class="btn" onclick="applyUnmarkedFilter()">筛选未标记</button>
+                        <button class="btn" onclick="clearUnmarkedFilter()">清除筛选</button>
+                    </div>
+                </div>
+                <!-- 站点使用结果展示区域 -->
+                <div id="usageResult" class="card" style="padding:14px; margin-top:12px; display:none;"></div>
                 <div id="accountList" class="account-list loading">
                     <p>加载中...</p>
                 </div>
@@ -2132,7 +2157,10 @@
             const filtered = (accountAllRecords || []).filter(acc => {
                 const okSearch = !accountSearchTerm || (acc.email || '').toLowerCase().includes(accountSearchTerm);
                 const okStatus = accountStatusFilter === 'all' || acc.status === accountStatusFilter;
-                return okSearch && okStatus;
+                // 未标记站点筛选：依赖后端 usage/status 接口的数据会更准确
+                // 这里做近似筛选：当启用未标记筛选时，使用缓存映射决定过滤
+                const okUnmarked = !unmarkedSiteFilter || isEmailUnmarkedForSite(acc.email, unmarkedSiteFilter);
+                return okSearch && okStatus && okUnmarked;
             });
             // 计算分页
             const total = filtered.length;
@@ -2144,6 +2172,14 @@
             // 渲染分页条
             renderAccountPagination(totalPages, total);
             return pageItems;
+        }
+
+        // 维护一个 {site -> Set(unmarkedEmails)} 的简单缓存，减少频繁请求
+        const unmarkedCache = new Map();
+        function isEmailUnmarkedForSite(email, site) {
+            const cacheEntry = unmarkedCache.get(site);
+            if (!cacheEntry) return true; // 若无缓存，先不过滤，等待用户点击“筛选未标记”时填充
+            return cacheEntry.has(email);
         }
 
         function renderAccountPagination(totalPages, totalItems) {
@@ -2235,6 +2271,32 @@
             document.querySelector(`.filter-btn[data-filter="${status}"]`).classList.add('active');
             
             accountStatusFilter = status;
+            accountPage = 1;
+            renderAccountList(paginateAndFilter());
+        }
+
+        // ============== 未标记筛选（按站点） ==============
+        let unmarkedSiteFilter = null; // 保存当前未标记筛选的站点
+        async function applyUnmarkedFilter() {
+            const site = (document.getElementById('usageSite').value || '').trim();
+            if (!site) { showError('请输入站点标识'); return; }
+            unmarkedSiteFilter = site;
+            // 若无缓存，主动拉取一次以精准筛选
+            if (!unmarkedCache.has(site)) {
+                try {
+                    const resp = await makeRequest(`${API_BASE}/accounts/usage/status?site=${encodeURIComponent(site)}&include_unused=true`);
+                    if (resp.ok) {
+                        const rows = await resp.json();
+                        const unusedSet = new Set(rows.filter(r => r.status === 'unused').map(r => r.email));
+                        unmarkedCache.set(site, unusedSet);
+                    }
+                } catch (_) { /* 忽略错误，仍按本地数据先行筛选 */ }
+            }
+            accountPage = 1;
+            renderAccountList(paginateAndFilter());
+        }
+        function clearUnmarkedFilter() {
+            unmarkedSiteFilter = null;
             accountPage = 1;
             renderAccountList(paginateAndFilter());
         }
@@ -2341,6 +2403,130 @@
             
             showSuccess(`已登录: ${currentUser}`);
             loadDualEmails(false);
+        }
+
+        // ================================
+        // 站点使用标记/查询 前端逻辑
+        // ================================
+        async function markUsageForSelected() {
+            const site = (document.getElementById('usageSite').value || '').trim();
+            const status = document.getElementById('usageStatusSelect').value;
+            const emails = getSelectedEmails();
+            if (!site) { showError('请输入站点标识'); return; }
+            if (emails.length === 0) { showError('请勾选要标记的账户'); return; }
+
+            try {
+                const resp = await makeRequest(`${API_BASE}/accounts/usage/mark`, {
+                    method: 'POST',
+                    body: JSON.stringify({ site, status, emails })
+                });
+                if (!resp.ok) throw new Error('标记失败');
+                const data = await resp.json();
+                showSuccess(data.message || '标记成功');
+            } catch (e) {
+                showError('标记失败: ' + e.message);
+            }
+        }
+
+        async function queryUsageForSite() {
+            const site = (document.getElementById('usageSite').value || '').trim();
+            if (!site) { showError('请输入站点标识'); return; }
+            const usediv = document.getElementById('usageResult');
+            usediv.style.display = 'block';
+            usediv.innerHTML = '<p>查询中...</p>';
+            try {
+                const resp = await makeRequest(`${API_BASE}/accounts/usage/status?site=${encodeURIComponent(site)}&include_unused=true`);
+                if (!resp.ok) throw new Error('查询失败');
+                const rows = await resp.json();
+                const total = rows.length;
+                const byStatus = rows.reduce((m, r) => { m[r.status] = (m[r.status]||0)+1; return m; }, {});
+                const head = `<div style="margin-bottom:8px; font-size:13px; color:#334155;">站点 <b>${site}</b> 用量：${total} 条（${Object.entries(byStatus).map(([k,v])=>`${k}:${v}`).join('，')}）</div>`;
+                const list = rows.slice(0, 500).map(r => `<div class="usage-row">${r.email} — <span class="badge badge-${r.status}">${r.status}</span> ${r.updated_at?`<span style=\"color:#94a3b8; font-size:12px;\">（${new Date(r.updated_at).toLocaleString()}）</span>`:''}</div>`).join('');
+                const more = rows.length>500 ? `<div style="color:#64748b; font-size:12px;">已截断显示 500 条，共 ${rows.length} 条</div>` : '';
+                const closeBar = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;"><div style="font-weight:600; color:#334155;">站点 ${site} 状态</div><button class=\"btn btn-secondary\" onclick=\"hideUsageResult()\">关闭</button></div>`;
+                usediv.innerHTML = `
+                    ${closeBar}
+                    <style>
+                        .usage-row { padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px; margin-bottom:6px; background:#fff; }
+                        .badge-registered { color:#16a34a; }
+                        .badge-pending { color:#2563eb; }
+                        .badge-failed { color:#dc2626; }
+                        .badge-blocked { color:#a855f7; }
+                        .badge-unused { color:#64748b; }
+                    </style>
+                    ${head}
+                    <div>${list || '<div class="verification-empty"><p>暂无数据</p></div>'}</div>
+                    ${more}
+                `;
+                // 更新未标记缓存，并在启用筛选时刷新列表
+                const unusedSet = new Set(rows.filter(r => r.status === 'unused').map(r => r.email));
+                unmarkedCache.set(site, unusedSet);
+                if (unmarkedSiteFilter === site) {
+                    accountPage = 1;
+                    renderAccountList(paginateAndFilter());
+                }
+            } catch (e) {
+                usediv.innerHTML = '';
+                showError('查询失败: ' + e.message);
+            }
+        }
+
+        async function showUsageSitesStats() {
+            const usediv = document.getElementById('usageResult');
+            usediv.style.display = 'block';
+            usediv.innerHTML = '<p>统计中...</p>';
+            try {
+                const resp = await makeRequest(`${API_BASE}/accounts/usage/sites`);
+                if (!resp.ok) throw new Error('统计失败');
+                const rows = await resp.json();
+                const header = `<div style=\"display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;\"><div style=\"font-weight:600; color:#334155;\">站点统计</div><button class=\"btn btn-secondary\" onclick=\"hideUsageResult()\">关闭</button></div>`;
+                const html = rows.map(r => {
+                    const kv = Object.entries(r.by_status || {}).map(([k,v])=>`${k}:${v}`).join('，');
+                    return `<div class=\"usage-row\"><b>${r.site}</b> — 总计 ${r.total_marked}（${kv}）</div>`;
+                }).join('');
+                usediv.innerHTML = header + (html || '<div class=\"verification-empty\"><p>暂无站点统计</p></div>');
+            } catch (e) {
+                usediv.innerHTML = '';
+                showError('统计失败: ' + e.message);
+            }
+        }
+
+        function hideUsageResult() {
+            const usediv = document.getElementById('usageResult');
+            usediv.style.display = 'none';
+            usediv.innerHTML = '';
+        }
+
+        async function markUsageFromDetail(fallbackEmail) {
+            const site = (document.getElementById('usageSiteDetail').value || document.getElementById('usageSite')?.value || '').trim();
+            const status = document.getElementById('usageStatusDetail').value;
+            const email = currentUser || (fallbackEmail || '').trim();
+            if (!site) { showError('请输入站点标识'); return; }
+            if (!email) { showError('无法识别当前邮箱'); return; }
+            try {
+                const resp = await makeRequest(`${API_BASE}/accounts/usage/mark`, {
+                    method: 'POST',
+                    body: JSON.stringify({ site, status, emails: [email] })
+                });
+                if (!resp.ok) throw new Error('标记失败');
+                showSuccess('已标记');
+                // 若当前筛选显示“未标记”，且该邮箱被标记，则更新缓存并重绘列表
+                if (unmarkedSiteFilter === site) {
+                    const set = unmarkedCache.get(site) || new Set();
+                    set.delete(email);
+                    unmarkedCache.set(site, set);
+                    renderAccountList(paginateAndFilter());
+                }
+            } catch (e) {
+                showError('标记失败: ' + e.message);
+            }
+        }
+
+        async function queryUsageForSiteFromDetail() {
+            const site = (document.getElementById('usageSiteDetail').value || document.getElementById('usageSite')?.value || '').trim();
+            if (!site) { showError('请输入站点标识'); return; }
+            document.getElementById('usageSite').value = site; // 同步到上方工具条
+            await queryUsageForSite();
         }
 
         function logout() {
@@ -2652,6 +2838,23 @@
                             <p><strong>发件人:</strong> ${email.from_email}</p>
                             <p><strong>收件人:</strong> ${email.to_email}</p>
                             <p><strong>日期:</strong> ${formatEmailDate(email.date)} (${new Date(email.date).toLocaleString()})</p>
+                        </div>
+                        <div class="usage-mark-toolbar" style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                            <div class="input-group" style="min-width:200px; margin-bottom:0;">
+                                <label>站点标识</label>
+                                <input type="text" id="usageSiteDetail" placeholder="如 twitter / tiktok / 任意自定义">
+                            </div>
+                            <div class="input-group" style="min-width:180px; margin-bottom:0;">
+                                <label>标记状态</label>
+                                <select id="usageStatusDetail" class="account-select">
+                                    <option value="registered">registered（已注册）</option>
+                                    <option value="pending">pending（进行中）</option>
+                                    <option value="failed">failed（失败）</option>
+                                    <option value="blocked">blocked（受限）</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-primary" onclick="markUsageFromDetail('${email.to_email || ''}')">标记当前邮箱</button>
+                            <button class="btn btn-secondary" onclick="queryUsageForSiteFromDetail()">查看该站点状态</button>
                         </div>
                     </div>
                     <div class="email-content-container">

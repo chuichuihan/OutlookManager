@@ -264,10 +264,11 @@ def _save_multiple_accounts_sync(credentials_list: List[AccountCredentials]):
     
     # 批量更新账户信息
     for credentials in credentials_list:
-        accounts[credentials.email] = {
-            'refresh_token': credentials.refresh_token,
-            'client_id': credentials.client_id
-        }
+        existing_record = accounts.get(credentials.email, {}) or {}
+        # 合并写入，避免覆盖其他元数据（如usage）
+        existing_record['refresh_token'] = credentials.refresh_token
+        existing_record['client_id'] = credentials.client_id
+        accounts[credentials.email] = existing_record
     
     # 直接写入文件（用户要求移除原子写入）
     with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
@@ -290,10 +291,10 @@ def _save_account_sync(email_id: str, credentials: AccountCredentials):
         with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
             accounts = json.load(f)
     
-    accounts[email_id] = {
-        'refresh_token': credentials.refresh_token,
-        'client_id': credentials.client_id
-    }
+    existing_record = accounts.get(email_id, {}) or {}
+    existing_record['refresh_token'] = credentials.refresh_token
+    existing_record['client_id'] = credentials.client_id
+    accounts[email_id] = existing_record
     
     # 直接写入文件（用户要求移除原子写入）
     with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
@@ -946,6 +947,154 @@ async def get_email_detail(email_id: str, message_id: str, current_admin: bool =
     """获取邮件详细内容"""
     credentials = await get_account_credentials(email_id)
     return await get_email_details(credentials, message_id)
+
+
+# ============================================================================
+# 账户使用标记（按站点）
+# ============================================================================
+
+from pydantic import Field
+
+ALLOWED_USAGE_STATUSES = {"registered", "pending", "failed", "blocked"}
+
+class AccountUsageEntry(BaseModel):
+    site: str
+    status: str = Field("registered", description="registered|pending|failed|blocked")
+    updated_at: Optional[str] = None
+
+class AccountUsageUpdateRequest(BaseModel):
+    site: str
+    emails: List[EmailStr]
+    status: str = Field("registered", description="registered|pending|failed|blocked")
+
+class AccountUsageStatusEntry(BaseModel):
+    email: EmailStr
+    site: str
+    status: str
+    updated_at: Optional[str] = None
+
+def _ensure_account_usage_structure(record: Dict[str, Any]) -> Dict[str, Any]:
+    if 'usage' not in record or not isinstance(record['usage'], dict):
+        record['usage'] = {}
+    return record
+
+@app.post("/accounts/usage/mark")
+async def mark_accounts_usage(
+    request: AccountUsageUpdateRequest,
+    current_admin: bool = Depends(get_current_admin)
+):
+    """批量为账户标记某站点的使用状态
+
+    - site: 站点标识（自定义字符串，如 "twitter", "tiktok"）
+    - status: registered|pending|failed|blocked
+    - emails: 要标记的邮箱列表
+    """
+    site_slug = request.site.strip()
+    if not site_slug:
+        raise HTTPException(status_code=400, detail="site 不能为空")
+    if request.status not in ALLOWED_USAGE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status 必须为 {sorted(list(ALLOWED_USAGE_STATUSES))}")
+
+    def _sync_mark_usage() -> Dict[str, int]:
+        if not Path(ACCOUNTS_FILE).exists():
+            return {"updated": 0, "not_found": len(request.emails)}
+        with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
+            accounts = json.load(f)
+
+        updated = 0
+        not_found = 0
+        now_iso = datetime.utcnow().isoformat()
+
+        for email_addr in request.emails:
+            if email_addr not in accounts:
+                not_found += 1
+                continue
+            record = accounts[email_addr] or {}
+            record = _ensure_account_usage_structure(record)
+            record['usage'][site_slug] = {
+                'status': request.status,
+                'updated_at': now_iso
+            }
+            accounts[email_addr] = record
+            updated += 1
+
+        with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(accounts, f, indent=2, ensure_ascii=False)
+
+        return {"updated": updated, "not_found": not_found}
+
+    result = await asyncio.to_thread(_sync_mark_usage)
+    return {"message": f"站点 {site_slug} 标记完成", **result}
+
+
+@app.get("/accounts/usage/status", response_model=List[AccountUsageStatusEntry])
+async def get_accounts_usage_status(
+    site: str = Query(..., description="站点标识"),
+    status: Optional[str] = Query(None, description="过滤状态: registered|pending|failed|blocked"),
+    include_unused: bool = Query(False, description="是否包含未标记账户（返回 status=unused）"),
+    emails: Optional[str] = Query(None, description="限定邮箱，逗号分隔"),
+    current_admin: bool = Depends(get_current_admin)
+):
+    """查询某站点下各邮箱的使用状态。
+
+    - 可按 status 过滤；
+    - include_unused=True 时，会将未标记该站点的邮箱以 status=unused 返回；
+    - emails 指定时仅在该集合内查询。
+    """
+    site_slug = site.strip()
+    if not site_slug:
+        raise HTTPException(status_code=400, detail="site 不能为空")
+    if status and status not in ALLOWED_USAGE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status 必须为 {sorted(list(ALLOWED_USAGE_STATUSES))}")
+
+    accounts = await get_all_accounts()
+    target_emails: List[str]
+    if emails:
+        target_emails = [e.strip() for e in emails.split(',') if e.strip()]
+        target_emails = [e for e in target_emails if e in accounts]
+    else:
+        target_emails = list(accounts.keys())
+
+    result: List[AccountUsageStatusEntry] = []
+    for email_addr in target_emails:
+        record = accounts.get(email_addr) or {}
+        usage_map = (record.get('usage') or {}) if isinstance(record.get('usage'), dict) else {}
+        entry = usage_map.get(site_slug)
+        if entry is None:
+            if include_unused and (status is None or status == 'unused'):
+                result.append(AccountUsageStatusEntry(email=email_addr, site=site_slug, status='unused', updated_at=None))
+            continue
+        entry_status = str(entry.get('status') or '')
+        entry_time = entry.get('updated_at')
+        if status is None or entry_status == status:
+            result.append(AccountUsageStatusEntry(email=email_addr, site=site_slug, status=entry_status, updated_at=entry_time))
+
+    return result
+
+
+class SiteUsageSummary(BaseModel):
+    site: str
+    total_marked: int
+    by_status: Dict[str, int]
+
+@app.get("/accounts/usage/sites", response_model=List[SiteUsageSummary])
+async def list_usage_sites(current_admin: bool = Depends(get_current_admin)):
+    """列出所有出现过的站点及其统计信息。"""
+    accounts = await get_all_accounts()
+    site_to_counts: Dict[str, Dict[str, int]] = {}
+    for record in accounts.values():
+        usage_map = (record.get('usage') or {}) if isinstance(record.get('usage'), dict) else {}
+        for site_slug, entry in usage_map.items():
+            if site_slug not in site_to_counts:
+                site_to_counts[site_slug] = {}
+            status_value = str((entry or {}).get('status') or 'unknown')
+            site_to_counts[site_slug][status_value] = site_to_counts[site_slug].get(status_value, 0) + 1
+
+    summaries: List[SiteUsageSummary] = []
+    for site_slug, counts in site_to_counts.items():
+        total = sum(counts.values())
+        summaries.append(SiteUsageSummary(site=site_slug, total_marked=total, by_status=counts))
+    return summaries
 
 
 @app.get("/")
