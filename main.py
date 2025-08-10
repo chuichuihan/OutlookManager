@@ -955,17 +955,13 @@ async def get_email_detail(email_id: str, message_id: str, current_admin: bool =
 
 from pydantic import Field
 
-ALLOWED_USAGE_STATUSES = {"registered", "pending", "failed", "blocked"}
-
 class AccountUsageEntry(BaseModel):
     site: str
-    status: str = Field("registered", description="registered|pending|failed|blocked")
     updated_at: Optional[str] = None
 
 class AccountUsageUpdateRequest(BaseModel):
     site: str
     emails: List[EmailStr]
-    status: str = Field("registered", description="registered|pending|failed|blocked")
 
 class AccountUsageStatusEntry(BaseModel):
     email: EmailStr
@@ -983,17 +979,14 @@ async def mark_accounts_usage(
     request: AccountUsageUpdateRequest,
     current_admin: bool = Depends(get_current_admin)
 ):
-    """批量为账户标记某站点的使用状态
+    """批量为账户标记某站点为“已使用”（不再区分细分状态）
 
     - site: 站点标识（自定义字符串，如 "twitter", "tiktok"）
-    - status: registered|pending|failed|blocked
     - emails: 要标记的邮箱列表
     """
     site_slug = request.site.strip()
     if not site_slug:
         raise HTTPException(status_code=400, detail="site 不能为空")
-    if request.status not in ALLOWED_USAGE_STATUSES:
-        raise HTTPException(status_code=400, detail=f"status 必须为 {sorted(list(ALLOWED_USAGE_STATUSES))}")
 
     def _sync_mark_usage() -> Dict[str, int]:
         if not Path(ACCOUNTS_FILE).exists():
@@ -1011,8 +1004,8 @@ async def mark_accounts_usage(
                 continue
             record = accounts[email_addr] or {}
             record = _ensure_account_usage_structure(record)
+            # 记录为已使用，仅记录时间戳
             record['usage'][site_slug] = {
-                'status': request.status,
                 'updated_at': now_iso
             }
             accounts[email_addr] = record
@@ -1030,7 +1023,6 @@ async def mark_accounts_usage(
 @app.get("/accounts/usage/status", response_model=List[AccountUsageStatusEntry])
 async def get_accounts_usage_status(
     site: str = Query(..., description="站点标识"),
-    status: Optional[str] = Query(None, description="过滤状态: registered|pending|failed|blocked"),
     include_unused: bool = Query(False, description="是否包含未标记账户（返回 status=unused）"),
     emails: Optional[str] = Query(None, description="限定邮箱，逗号分隔"),
     current_admin: bool = Depends(get_current_admin)
@@ -1044,8 +1036,6 @@ async def get_accounts_usage_status(
     site_slug = site.strip()
     if not site_slug:
         raise HTTPException(status_code=400, detail="site 不能为空")
-    if status and status not in ALLOWED_USAGE_STATUSES:
-        raise HTTPException(status_code=400, detail=f"status 必须为 {sorted(list(ALLOWED_USAGE_STATUSES))}")
 
     accounts = await get_all_accounts()
     target_emails: List[str]
@@ -1061,13 +1051,12 @@ async def get_accounts_usage_status(
         usage_map = (record.get('usage') or {}) if isinstance(record.get('usage'), dict) else {}
         entry = usage_map.get(site_slug)
         if entry is None:
-            if include_unused and (status is None or status == 'unused'):
+            if include_unused:
                 result.append(AccountUsageStatusEntry(email=email_addr, site=site_slug, status='unused', updated_at=None))
             continue
-        entry_status = str(entry.get('status') or '')
         entry_time = entry.get('updated_at')
-        if status is None or entry_status == status:
-            result.append(AccountUsageStatusEntry(email=email_addr, site=site_slug, status=entry_status, updated_at=entry_time))
+        # 存在即视为已使用
+        result.append(AccountUsageStatusEntry(email=email_addr, site=site_slug, status='used', updated_at=entry_time))
 
     return result
 
@@ -1087,8 +1076,8 @@ async def list_usage_sites(current_admin: bool = Depends(get_current_admin)):
         for site_slug, entry in usage_map.items():
             if site_slug not in site_to_counts:
                 site_to_counts[site_slug] = {}
-            status_value = str((entry or {}).get('status') or 'unknown')
-            site_to_counts[site_slug][status_value] = site_to_counts[site_slug].get(status_value, 0) + 1
+            # 存在即视为 used
+            site_to_counts[site_slug]['used'] = site_to_counts[site_slug].get('used', 0) + 1
 
     summaries: List[SiteUsageSummary] = []
     for site_slug, counts in site_to_counts.items():

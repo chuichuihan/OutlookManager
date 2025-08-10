@@ -1432,15 +1432,6 @@
                         <label>站点标识</label>
                         <input type="text" id="usageSite" placeholder="如 twitter / tiktok / 任意自定义">
                     </div>
-                    <div class="input-group" style="min-width:200px; margin-bottom:0;">
-                        <label>标记状态</label>
-                        <select id="usageStatusSelect" class="account-select">
-                            <option value="registered">registered（已注册）</option>
-                            <option value="pending">pending（进行中）</option>
-                            <option value="failed">failed（失败）</option>
-                            <option value="blocked">blocked（受限）</option>
-                        </select>
-                    </div>
                     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                         <button class="btn btn-primary" onclick="markUsageForSelected()">为选中标记</button>
                         <button class="btn btn-secondary" onclick="queryUsageForSite()">查询站点</button>
@@ -1484,15 +1475,6 @@
                 <div class="input-group" style="min-width:200px; margin-bottom:0;">
                     <label>站点标识</label>
                     <input type="text" id="usageSiteDual" placeholder="如 twitter / tiktok / 任意自定义">
-                </div>
-                <div class="input-group" style="min-width:180px; margin-bottom:0;">
-                    <label>标记状态</label>
-                    <select id="usageStatusDual" class="account-select">
-                        <option value="registered">registered（已注册）</option>
-                        <option value="pending">pending（进行中）</option>
-                        <option value="failed">failed（失败）</option>
-                        <option value="blocked">blocked（受限）</option>
-                    </select>
                 </div>
                 <button class="btn btn-primary" onclick="markCurrentAccountUsageFromDual()">🏷️ 标记当前账户</button>
             </div>
@@ -2437,7 +2419,7 @@
         // ================================
         async function markUsageForSelected() {
             const site = (document.getElementById('usageSite').value || '').trim();
-            const status = document.getElementById('usageStatusSelect').value;
+            const status = 'used';
             const emails = getSelectedEmails();
             if (!site) { showError('请输入站点标识'); return; }
             if (emails.length === 0) { showError('请勾选要标记的账户'); return; }
@@ -2445,7 +2427,7 @@
             try {
                 const resp = await makeRequest(`${API_BASE}/accounts/usage/mark`, {
                     method: 'POST',
-                    body: JSON.stringify({ site, status, emails })
+                    body: JSON.stringify({ site, emails })
                 });
                 if (!resp.ok) throw new Error('标记失败');
                 const data = await resp.json();
@@ -2468,17 +2450,14 @@
                 const total = rows.length;
                 const byStatus = rows.reduce((m, r) => { m[r.status] = (m[r.status]||0)+1; return m; }, {});
                 const head = `<div style="margin-bottom:8px; font-size:13px; color:#334155;">站点 <b>${site}</b> 用量：${total} 条（${Object.entries(byStatus).map(([k,v])=>`${k}:${v}`).join('，')}）</div>`;
-                const list = rows.slice(0, 500).map(r => `<div class="usage-row">${r.email} — <span class="badge badge-${r.status}">${r.status}</span> ${r.updated_at?`<span style=\"color:#94a3b8; font-size:12px;\">（${new Date(r.updated_at).toLocaleString()}）</span>`:''}</div>`).join('');
+                const list = rows.slice(0, 500).map(r => `<div class="usage-row">${r.email} — <span class="badge badge-${r.status}">${r.status === 'used' ? 'used' : r.status}</span> ${r.updated_at?`<span style=\"color:#94a3b8; font-size:12px;\">（${new Date(r.updated_at).toLocaleString()}）</span>`:''}</div>`).join('');
                 const more = rows.length>500 ? `<div style="color:#64748b; font-size:12px;">已截断显示 500 条，共 ${rows.length} 条</div>` : '';
                 const closeBar = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;"><div style="font-weight:600; color:#334155;">站点 ${site} 状态</div><button class=\"btn btn-secondary\" onclick=\"hideUsageResult()\">关闭</button></div>`;
                 usediv.innerHTML = `
                     ${closeBar}
                     <style>
                         .usage-row { padding:6px 8px; border:1px solid #e2e8f0; border-radius:8px; margin-bottom:6px; background:#fff; }
-                        .badge-registered { color:#16a34a; }
-                        .badge-pending { color:#2563eb; }
-                        .badge-failed { color:#dc2626; }
-                        .badge-blocked { color:#a855f7; }
+                        .badge-used { color:#16a34a; }
                         .badge-unused { color:#64748b; }
                     </style>
                     ${head}
@@ -2526,7 +2505,7 @@
 
         async function markCurrentAccountUsage() {
             const site = (document.getElementById('usageSiteDetail').value || '').trim();
-            const status = document.getElementById('usageStatusDetail').value;
+            const status = 'used';
             const email = currentUser;
             
             if (!site) { 
@@ -2548,7 +2527,7 @@
                 
                 const resp = await makeRequest(`${API_BASE}/accounts/usage/mark`, {
                     method: 'POST',
-                    body: JSON.stringify({ site, status, emails: [email] })
+                    body: JSON.stringify({ site, emails: [email] })
                 });
                 
                 if (!resp.ok) throw new Error('标记失败');
@@ -2592,7 +2571,7 @@
 
         async function markCurrentAccountUsageFromDual() {
             const site = (document.getElementById('usageSiteDual').value || '').trim();
-            const status = document.getElementById('usageStatusDual').value;
+            const status = 'used';
             const email = currentUser;
             
             if (!site) { 
@@ -2614,7 +2593,7 @@
                 
                 const resp = await makeRequest(`${API_BASE}/accounts/usage/mark`, {
                     method: 'POST',
-                    body: JSON.stringify({ site, status, emails: [email] })
+                    body: JSON.stringify({ site, emails: [email] })
                 });
                 
                 if (!resp.ok) throw new Error('标记失败');
@@ -3033,15 +3012,6 @@
                             <div class="input-group" style="min-width:200px; margin-bottom:0;">
                                 <label>站点标识</label>
                                 <input type="text" id="usageSiteDetail" placeholder="如 twitter / tiktok / 任意自定义">
-                            </div>
-                            <div class="input-group" style="min-width:180px; margin-bottom:0;">
-                                <label>标记状态</label>
-                                <select id="usageStatusDetail" class="account-select">
-                                    <option value="registered">registered（已注册）</option>
-                                    <option value="pending">pending（进行中）</option>
-                                    <option value="failed">failed（失败）</option>
-                                    <option value="blocked">blocked（受限）</option>
-                                </select>
                             </div>
                             <button class="btn btn-primary" onclick="markCurrentAccountUsage()">🏷️ 标记</button>
                         </div>
