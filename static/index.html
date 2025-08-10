@@ -2760,20 +2760,20 @@
                 rootContainer.classList.add('reduced-motion');
 
                 const renderTasks = [];
-                // 渲染收件箱邮件
+                // 渲染收件箱邮件 - 优化块大小，减少渲染频率
                 if (data.inbox_emails.length === 0) {
                     inboxList.innerHTML = '<div class="loading"><p>暂无邮件</p></div>';
                 } else {
                     inboxList.innerHTML = '';
-                    renderTasks.push(renderEmailListChunked(inboxList, data.inbox_emails, 10));
+                    renderTasks.push(renderEmailListChunked(inboxList, data.inbox_emails, 15)); // 增加块大小
                 }
 
-                // 渲染垃圾邮件
+                // 渲染垃圾邮件 - 优化块大小，减少渲染频率
                 if (data.junk_emails.length === 0) {
                     junkList.innerHTML = '<div class="loading"><p>暂无邮件</p></div>';
                 } else {
                     junkList.innerHTML = '';
-                    renderTasks.push(renderEmailListChunked(junkList, data.junk_emails, 10));
+                    renderTasks.push(renderEmailListChunked(junkList, data.junk_emails, 15)); // 增加块大小
                 }
 
                 await Promise.all(renderTasks);
@@ -3068,12 +3068,20 @@
             loadAccountList();
         }
         
-        // 账户选择器缓存
+        // 账户选择器缓存 - 延长缓存时间以减少频繁加载
         let accountSwitcherCache = null;
         let accountSwitcherCacheTime = 0;
-        const ACCOUNT_SWITCHER_CACHE_TTL = 30000; // 30秒缓存
+        const ACCOUNT_SWITCHER_CACHE_TTL = 120000; // 2分钟缓存，减少频繁刷新
+        
+        // 添加加载状态管理，防止重复加载
+        let isLoadingAccountSwitcher = false;
         
         async function loadAccountSwitcher(forceRefresh = false) {
+            // 防止重复加载
+            if (isLoadingAccountSwitcher) {
+                return;
+            }
+            
             try {
                 // 检查缓存是否有效
                 const now = Date.now();
@@ -3082,6 +3090,8 @@
                     return;
                 }
 
+                isLoadingAccountSwitcher = true;
+                
                 const response = await makeRequest(`${API_BASE}/accounts`);
                 if (!response.ok) throw new Error('获取账户列表失败');
 
@@ -3095,25 +3105,47 @@
 
             } catch (error) {
                 console.error('加载账户选择器失败:', error);
+            } finally {
+                isLoadingAccountSwitcher = false;
             }
         }
         
-        // 渲染账户选择器（分离数据获取和DOM操作）
+        // 渲染账户选择器（高性能DOM操作优化）
         function renderAccountSwitcher(accounts) {
             const switcher = document.getElementById('accountSwitcher');
             if (!switcher) return;
 
-            // 批量构建 HTML，减少大量逐条 DOM 操作
-            let html = '<option value="">选择邮箱...</option>';
+            // 使用 DocumentFragment 批量操作，避免多次重排重绘
+            const fragment = document.createDocumentFragment();
+            
+            // 清空并添加默认选项
+            switcher.innerHTML = '';
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = '选择邮箱...';
+            fragment.appendChild(defaultOption);
+            
+            // 批量创建选项元素
             for (const account of accounts) {
+                const option = document.createElement('option');
+                option.value = account.email;
+                
                 const isCurrent = account.email === currentUser;
                 const isInactive = account.status === 'inactive';
                 const isActive = account.status === 'active';
                 const labelSuffix = `${isCurrent ? ' (当前)' : ''}${isInactive ? ' (无效)' : ''}`;
-                const colorStyle = isInactive ? ' style="color:#dc2626"' : (isActive ? ' style="color:#16a34a"' : '');
-                html += `<option value="${account.email}"${isCurrent ? ' selected' : ''}${colorStyle}>${account.email}${labelSuffix}</option>`;
+                
+                option.textContent = `${account.email}${labelSuffix}`;
+                
+                if (isCurrent) option.selected = true;
+                if (isInactive) option.style.color = '#dc2626';
+                else if (isActive) option.style.color = '#16a34a';
+                
+                fragment.appendChild(option);
             }
-            switcher.innerHTML = html;
+            
+            // 一次性添加所有选项，减少DOM重排
+            switcher.appendChild(fragment);
         }
         
         async function switchAccount() {
@@ -3206,32 +3238,56 @@
             }
         };
         
-        // 页面可见性变化时刷新账户选择器（防抖优化）
+        // 页面可见性变化时刷新账户选择器（高度优化的防抖处理）
         let visibilityChangeTimer = null;
+        let isProcessingVisibilityChange = false;
+        let lastVisibilityChangeTime = 0;
+        const MIN_VISIBILITY_CHANGE_INTERVAL = 2000; // 最小间隔2秒
+        
         document.addEventListener('visibilitychange', function() {
+            // 防止重复处理
+            if (isProcessingVisibilityChange) {
+                return;
+            }
+            
+            const now = Date.now();
+            // 检查是否在最小间隔内，避免频繁切换时的重复处理
+            if (now - lastVisibilityChangeTime < MIN_VISIBILITY_CHANGE_INTERVAL) {
+                return;
+            }
+            
             // 清除之前的定时器，防抖处理
             if (visibilityChangeTimer) {
                 clearTimeout(visibilityChangeTimer);
             }
             
             if (!document.hidden && currentUser && document.getElementById('emailCard').classList.contains('hidden') === false) {
+                isProcessingVisibilityChange = true;
+                lastVisibilityChangeTime = now;
+                
                 // 延迟执行，避免立即阻塞主线程
                 visibilityChangeTimer = setTimeout(() => {
                     // 检查缓存是否过期，只在必要时才刷新
-                    const now = Date.now();
                     const cacheExpired = !accountSwitcherCache || (now - accountSwitcherCacheTime) >= ACCOUNT_SWITCHER_CACHE_TTL;
                     
                     if (cacheExpired) {
-                        // 使用空闲回调或下一帧执行，进一步降低阻塞感知
+                        // 使用空闲回调，并设置更长的超时时间
                         if (window.requestIdleCallback) {
                             requestIdleCallback(() => {
                                 loadAccountSwitcher();
-                            }, { timeout: 2000 });
+                                isProcessingVisibilityChange = false;
+                            }, { timeout: 5000 });
                         } else {
-                            setTimeout(() => loadAccountSwitcher(), 100);
+                            setTimeout(() => {
+                                loadAccountSwitcher();
+                                isProcessingVisibilityChange = false;
+                            }, 500);
                         }
+                    } else {
+                        // 如果缓存未过期，直接结束处理
+                        isProcessingVisibilityChange = false;
                     }
-                }, 300); // 300ms 防抖延迟
+                }, 800); // 增加防抖延迟到800ms
             }
         });
     </script>
