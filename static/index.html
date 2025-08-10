@@ -1479,6 +1479,33 @@
                 </div>
             </div>
 
+            <!-- 双栏页面标记工具条 -->
+            <div class="usage-mark-toolbar" style="margin-bottom:16px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; padding:12px; border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc;">
+                <div class="input-group" style="min-width:200px; margin-bottom:0;">
+                    <label>站点标识</label>
+                    <input type="text" id="usageSiteDual" placeholder="如 twitter / tiktok / 任意自定义">
+                </div>
+                <div class="input-group" style="min-width:180px; margin-bottom:0;">
+                    <label>标记状态</label>
+                    <select id="usageStatusDual" class="account-select">
+                        <option value="registered">registered（已注册）</option>
+                        <option value="pending">pending（进行中）</option>
+                        <option value="failed">failed（失败）</option>
+                        <option value="blocked">blocked（受限）</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" onclick="markCurrentAccountUsageFromDual()">🏷️ 标记当前账户</button>
+            </div>
+
+            <!-- 邮件搜索工具条 -->
+            <div style="margin-bottom:16px; display:flex; gap:8px; align-items:center; padding:8px 12px; border:1px solid #e2e8f0; border-radius:8px; background:#ffffff;">
+                <div class="search-container" style="flex:1; position:relative;">
+                    <input type="text" id="emailSearch" placeholder="🔍 搜索邮件标题..." onkeyup="filterEmails()" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px;">
+                    <button class="btn btn-secondary" onclick="clearEmailSearch()" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); padding:4px 8px; font-size:12px; display:none;" id="clearSearchBtn">清除</button>
+                </div>
+                <div style="font-size:12px; color:#64748b;" id="searchStatus">显示全部邮件</div>
+            </div>
+
             <div class="dual-view-container">
                 <div class="email-column">
                     <div class="column-header">
@@ -2497,29 +2524,63 @@
             usediv.innerHTML = '';
         }
 
-        async function markUsageFromDetail(fallbackEmail) {
-            const site = (document.getElementById('usageSiteDetail').value || document.getElementById('usageSite')?.value || '').trim();
+        async function markCurrentAccountUsage() {
+            const site = (document.getElementById('usageSiteDetail').value || '').trim();
             const status = document.getElementById('usageStatusDetail').value;
-            const email = currentUser || (fallbackEmail || '').trim();
-            if (!site) { showError('请输入站点标识'); return; }
-            if (!email) { showError('无法识别当前邮箱'); return; }
+            const email = currentUser;
+            
+            if (!site) { 
+                showError('请输入站点标识'); 
+                document.getElementById('usageSiteDetail').focus();
+                return; 
+            }
+            if (!email) { 
+                showError('无法识别当前邮箱账户'); 
+                return; 
+            }
+            
             try {
+                // 添加按钮加载状态
+                const markBtn = document.querySelector('button[onclick="markCurrentAccountUsage()"]');
+                const originalText = markBtn.innerHTML;
+                markBtn.innerHTML = '<div style="display:inline-flex;align-items:center;gap:4px;"><div style="width:12px;height:12px;border:2px solid #fff;border-top:2px solid transparent;border-radius:50%;animation:spin 1s linear infinite;"></div>标记中...</div>';
+                markBtn.disabled = true;
+                
                 const resp = await makeRequest(`${API_BASE}/accounts/usage/mark`, {
                     method: 'POST',
                     body: JSON.stringify({ site, status, emails: [email] })
                 });
+                
                 if (!resp.ok) throw new Error('标记失败');
-                showSuccess('已标记');
-                // 若当前筛选显示“未标记”，且该邮箱被标记，则更新缓存并重绘列表
+                
+                showSuccess(`✅ 已为 ${email} 标记 ${site} 为 ${status}`);
+                
+                // 若当前筛选显示"未标记"，且该邮箱被标记，则更新缓存并重绘列表
                 if (unmarkedSiteFilter === site) {
                     const set = unmarkedCache.get(site) || new Set();
                     set.delete(email);
                     unmarkedCache.set(site, set);
                     renderAccountList(paginateAndFilter());
                 }
+                
+                // 恢复按钮状态
+                markBtn.innerHTML = originalText;
+                markBtn.disabled = false;
+                
             } catch (e) {
                 showError('标记失败: ' + e.message);
+                // 恢复按钮状态
+                const markBtn = document.querySelector('button[onclick="markCurrentAccountUsage()"]');
+                if (markBtn) {
+                    markBtn.innerHTML = '✅ 立即标记';
+                    markBtn.disabled = false;
+                }
             }
+        }
+
+        async function markUsageFromDetail(fallbackEmail) {
+            // 保留原函数以兼容
+            await markCurrentAccountUsage();
         }
 
         async function queryUsageForSiteFromDetail() {
@@ -2527,6 +2588,135 @@
             if (!site) { showError('请输入站点标识'); return; }
             document.getElementById('usageSite').value = site; // 同步到上方工具条
             await queryUsageForSite();
+        }
+
+        async function markCurrentAccountUsageFromDual() {
+            const site = (document.getElementById('usageSiteDual').value || '').trim();
+            const status = document.getElementById('usageStatusDual').value;
+            const email = currentUser;
+            
+            if (!site) { 
+                showError('请输入站点标识'); 
+                document.getElementById('usageSiteDual').focus();
+                return; 
+            }
+            if (!email) { 
+                showError('无法识别当前邮箱账户'); 
+                return; 
+            }
+            
+            try {
+                // 添加按钮加载状态
+                const markBtn = document.querySelector('button[onclick="markCurrentAccountUsageFromDual()"]');
+                const originalText = markBtn.innerHTML;
+                markBtn.innerHTML = '<div style="display:inline-flex;align-items:center;gap:4px;"><div style="width:12px;height:12px;border:2px solid #fff;border-top:2px solid transparent;border-radius:50%;animation:spin 1s linear infinite;"></div>标记中...</div>';
+                markBtn.disabled = true;
+                
+                const resp = await makeRequest(`${API_BASE}/accounts/usage/mark`, {
+                    method: 'POST',
+                    body: JSON.stringify({ site, status, emails: [email] })
+                });
+                
+                if (!resp.ok) throw new Error('标记失败');
+                
+                showSuccess(`✅ 已为 ${email} 标记 ${site} 为 ${status}`);
+                
+                // 若当前筛选显示"未标记"，且该邮箱被标记，则更新缓存并重绘列表
+                if (unmarkedSiteFilter === site) {
+                    const set = unmarkedCache.get(site) || new Set();
+                    set.delete(email);
+                    unmarkedCache.set(site, set);
+                    renderAccountList(paginateAndFilter());
+                }
+                
+                // 恢复按钮状态
+                markBtn.innerHTML = originalText;
+                markBtn.disabled = false;
+                
+            } catch (e) {
+                showError('标记失败: ' + e.message);
+                // 恢复按钮状态
+                const markBtn = document.querySelector('button[onclick="markCurrentAccountUsageFromDual()"]');
+                if (markBtn) {
+                    markBtn.innerHTML = '🏷️ 标记当前账户';
+                    markBtn.disabled = false;
+                }
+            }
+        }
+
+        // ===============================
+        // 双栏邮件搜索功能
+        // ===============================
+        function filterEmails() {
+            const searchTerm = document.getElementById('emailSearch').value.toLowerCase().trim();
+            const clearBtn = document.getElementById('clearSearchBtn');
+            const statusDiv = document.getElementById('searchStatus');
+            
+            // 显示/隐藏清除按钮
+            if (searchTerm) {
+                clearBtn.style.display = 'block';
+            } else {
+                clearBtn.style.display = 'none';
+            }
+            
+            // 筛选收件箱邮件
+            const inboxItems = document.querySelectorAll('#inboxList .email-item');
+            let inboxVisible = 0;
+            inboxItems.forEach(item => {
+                const subject = item.querySelector('.email-subject')?.textContent.toLowerCase() || '';
+                if (!searchTerm || subject.includes(searchTerm)) {
+                    item.style.display = 'block';
+                    inboxVisible++;
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+            
+            // 筛选垃圾箱邮件
+            const junkItems = document.querySelectorAll('#junkList .email-item');
+            let junkVisible = 0;
+            junkItems.forEach(item => {
+                const subject = item.querySelector('.email-subject')?.textContent.toLowerCase() || '';
+                if (!searchTerm || subject.includes(searchTerm)) {
+                    item.style.display = 'block';
+                    junkVisible++;
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+            
+            // 更新状态显示
+            const totalVisible = inboxVisible + junkVisible;
+            const totalEmails = inboxItems.length + junkItems.length;
+            
+            if (!searchTerm) {
+                statusDiv.textContent = '显示全部邮件';
+            } else {
+                statusDiv.textContent = `找到 ${totalVisible}/${totalEmails} 封邮件`;
+                
+                // 如果没有匹配结果，显示提示
+                if (totalVisible === 0 && totalEmails > 0) {
+                    statusDiv.textContent = `未找到包含 "${searchTerm}" 的邮件`;
+                    statusDiv.style.color = '#dc2626';
+                } else {
+                    statusDiv.style.color = '#64748b';
+                }
+            }
+        }
+
+        function clearEmailSearch() {
+            document.getElementById('emailSearch').value = '';
+            document.getElementById('clearSearchBtn').style.display = 'none';
+            
+            // 显示所有邮件
+            const allItems = document.querySelectorAll('#inboxList .email-item, #junkList .email-item');
+            allItems.forEach(item => {
+                item.style.display = 'block';
+            });
+            
+            // 重置状态显示
+            document.getElementById('searchStatus').textContent = '显示全部邮件';
+            document.getElementById('searchStatus').style.color = '#64748b';
         }
 
         function logout() {
@@ -2839,7 +3029,7 @@
                             <p><strong>收件人:</strong> ${email.to_email}</p>
                             <p><strong>日期:</strong> ${formatEmailDate(email.date)} (${new Date(email.date).toLocaleString()})</p>
                         </div>
-                        <div class="usage-mark-toolbar" style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <div class="usage-mark-toolbar" style="margin-top:10px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; padding:12px; border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc;">
                             <div class="input-group" style="min-width:200px; margin-bottom:0;">
                                 <label>站点标识</label>
                                 <input type="text" id="usageSiteDetail" placeholder="如 twitter / tiktok / 任意自定义">
@@ -2853,8 +3043,7 @@
                                     <option value="blocked">blocked（受限）</option>
                                 </select>
                             </div>
-                            <button class="btn btn-primary" onclick="markUsageFromDetail('${email.to_email || ''}')">标记当前邮箱</button>
-                            <button class="btn btn-secondary" onclick="queryUsageForSiteFromDetail()">查看该站点状态</button>
+                            <button class="btn btn-primary" onclick="markCurrentAccountUsage()">🏷️ 标记</button>
                         </div>
                     </div>
                     <div class="email-content-container">
