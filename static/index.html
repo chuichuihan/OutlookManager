@@ -1651,7 +1651,14 @@
                 ...options
             };
             
-            const response = await fetch(url, defaultOptions);
+            // 支持可选超时（毫秒），默认不超时
+            const controller = new AbortController();
+            const { timeoutMs } = options;
+            if (timeoutMs) {
+                setTimeout(() => controller.abort(), timeoutMs);
+            }
+
+            const response = await fetch(url, { ...defaultOptions, signal: controller.signal });
             
             // 如果返回401，清除密码并重定向到登录
             if (response.status === 401) {
@@ -1792,16 +1799,34 @@
             }
             
             try {
-                const response = await makeRequest(`${API_BASE}/accounts/verify`, {
-                    method: 'POST',
-                    body: JSON.stringify({ accounts })
-                });
-                
-                if (!response.ok) throw new Error('验证请求失败');
-                
-                const results = await response.json();
-                renderVerificationResult(results);
-                
+                // 将大批量验证按小批次分块，避免单个超长请求
+                const chunkSize = 300; // 每批300个（可按需调节）
+                const chunks = [];
+                for (let i = 0; i < accounts.length; i += chunkSize) {
+                    chunks.push(accounts.slice(i, i + chunkSize));
+                }
+
+                const allResults = [];
+
+                for (let i = 0; i < chunks.length; i++) {
+                    const chunk = chunks[i];
+                    // 每个请求设置较长超时（例如 10 分钟）
+                    const response = await makeRequest(`${API_BASE}/accounts/verify`, {
+                        method: 'POST',
+                        body: JSON.stringify({ accounts: chunk }),
+                        timeoutMs: 10 * 60 * 1000
+                    });
+
+                    if (!response.ok) throw new Error(`第 ${i + 1}/${chunks.length} 批验证请求失败`);
+                    const results = await response.json();
+                    allResults.push(...results);
+
+                    // 分批渲染进度
+                    renderVerificationResult(allResults);
+                }
+
+                // 全部完成后再渲染一次，确保UI一致
+                renderVerificationResult(allResults);
             } catch (error) {
                 resultList.innerHTML = `<div class="verification-empty"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg><p>验证失败: ${error.message}</p></div>`;
             }

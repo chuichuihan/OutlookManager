@@ -354,7 +354,9 @@ async def get_access_token(credentials: AccountCredentials, check_only: bool = F
     }
     
     try:
-        async with httpx.AsyncClient() as client:
+        # 显式设置较长超时，避免默认5秒导致大批量验证时的偶发超时
+        timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(TOKEN_URL, data=data)
             response.raise_for_status()
             
