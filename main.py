@@ -969,6 +969,10 @@ class AccountUsageStatusEntry(BaseModel):
     status: str
     updated_at: Optional[str] = None
 
+class SiteRenameRequest(BaseModel):
+    old_site: str
+    new_site: str
+
 def _ensure_account_usage_structure(record: Dict[str, Any]) -> Dict[str, Any]:
     if 'usage' not in record or not isinstance(record['usage'], dict):
         record['usage'] = {}
@@ -1018,6 +1022,50 @@ async def mark_accounts_usage(
 
     result = await asyncio.to_thread(_sync_mark_usage)
     return {"message": f"站点 {site_slug} 标记完成", **result}
+
+
+@app.post("/accounts/usage/unmark")
+async def unmark_accounts_usage(
+    request: AccountUsageUpdateRequest,
+    current_admin: bool = Depends(get_current_admin)
+):
+    """批量为账户取消某站点的使用标记。
+
+    - site: 站点标识
+    - emails: 要取消标记的邮箱列表
+    """
+    site_slug = request.site.strip()
+    if not site_slug:
+        raise HTTPException(status_code=400, detail="site 不能为空")
+
+    def _sync_unmark_usage() -> Dict[str, int]:
+        if not Path(ACCOUNTS_FILE).exists():
+            return {"updated": 0, "not_found": len(request.emails)}
+        with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
+            accounts = json.load(f)
+
+        updated = 0
+        not_found = 0
+
+        for email_addr in request.emails:
+            if email_addr not in accounts:
+                not_found += 1
+                continue
+            record = accounts[email_addr] or {}
+            usage_map = (record.get('usage') or {}) if isinstance(record.get('usage'), dict) else {}
+            if site_slug in usage_map:
+                usage_map.pop(site_slug, None)
+                record['usage'] = usage_map
+                accounts[email_addr] = record
+                updated += 1
+
+        with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(accounts, f, indent=2, ensure_ascii=False)
+
+        return {"updated": updated, "not_found": not_found}
+
+    result = await asyncio.to_thread(_sync_unmark_usage)
+    return {"message": f"站点 {site_slug} 取消标记完成", **result}
 
 
 @app.get("/accounts/usage/status", response_model=List[AccountUsageStatusEntry])
@@ -1084,6 +1132,80 @@ async def list_usage_sites(current_admin: bool = Depends(get_current_admin)):
         total = sum(counts.values())
         summaries.append(SiteUsageSummary(site=site_slug, total_marked=total, by_status=counts))
     return summaries
+
+
+@app.delete("/accounts/usage/site")
+async def delete_usage_site(
+    site: str = Query(..., description="站点标识"),
+    current_admin: bool = Depends(get_current_admin)
+):
+    """从所有账户中删除指定站点的使用标记。"""
+    site_slug = site.strip()
+    if not site_slug:
+        raise HTTPException(status_code=400, detail="site 不能为空")
+
+    def _sync_delete_site() -> Dict[str, int]:
+        if not Path(ACCOUNTS_FILE).exists():
+            return {"removed": 0, "touched": 0}
+        with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
+            accounts = json.load(f)
+
+        removed = 0
+        touched = 0
+        for email_addr, record in accounts.items():
+            usage_map = (record.get('usage') or {}) if isinstance(record.get('usage'), dict) else {}
+            if site_slug in usage_map:
+                usage_map.pop(site_slug, None)
+                record['usage'] = usage_map
+                accounts[email_addr] = record
+                removed += 1
+                touched += 1
+
+        with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(accounts, f, indent=2, ensure_ascii=False)
+
+        return {"removed": removed, "touched": touched}
+
+    result = await asyncio.to_thread(_sync_delete_site)
+    return {"message": f"站点 {site_slug} 已从所有账户移除", **result}
+
+
+@app.post("/accounts/usage/rename")
+async def rename_usage_site(
+    request: SiteRenameRequest,
+    current_admin: bool = Depends(get_current_admin)
+):
+    """在所有账户中重命名站点标识。"""
+    old_slug = (request.old_site or '').strip()
+    new_slug = (request.new_site or '').strip()
+    if not old_slug or not new_slug:
+        raise HTTPException(status_code=400, detail="old_site/new_site 不能为空")
+    if old_slug == new_slug:
+        raise HTTPException(status_code=400, detail="新旧标识不能相同")
+
+    def _sync_rename_site() -> Dict[str, int]:
+        if not Path(ACCOUNTS_FILE).exists():
+            return {"renamed": 0}
+        with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
+            accounts = json.load(f)
+
+        renamed = 0
+        for email_addr, record in accounts.items():
+            usage_map = (record.get('usage') or {}) if isinstance(record.get('usage'), dict) else {}
+            if old_slug in usage_map:
+                entry = usage_map.pop(old_slug)
+                usage_map[new_slug] = entry
+                record['usage'] = usage_map
+                accounts[email_addr] = record
+                renamed += 1
+
+        with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(accounts, f, indent=2, ensure_ascii=False)
+
+        return {"renamed": renamed}
+
+    result = await asyncio.to_thread(_sync_rename_site)
+    return {"message": f"站点 {old_slug} 已重命名为 {new_slug}", **result}
 
 
 @app.get("/")

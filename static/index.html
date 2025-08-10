@@ -1434,8 +1434,10 @@
                     </div>
                     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                         <button class="btn btn-primary" onclick="markUsageForSelected()">为选中标记</button>
+                        <button class="btn" onclick="unmarkUsageForSelected()">取消标记</button>
                         <button class="btn btn-secondary" onclick="queryUsageForSite()">查询站点</button>
                         <button class="btn btn-secondary" onclick="showUsageSitesStats()">站点统计</button>
+                        <button class="btn btn-secondary" onclick="openManageSites()">管理站点</button>
                         <button class="btn" onclick="applyUnmarkedFilter()">筛选未标记</button>
                         <button class="btn" onclick="clearUnmarkedFilter()">清除筛选</button>
                     </div>
@@ -2437,6 +2439,29 @@
             }
         }
 
+        async function unmarkUsageForSelected() {
+            const site = (document.getElementById('usageSite').value || '').trim();
+            const emails = getSelectedEmails();
+            if (!site) { showError('请输入站点标识'); return; }
+            if (emails.length === 0) { showError('请勾选要取消标记的账户'); return; }
+
+            try {
+                const resp = await makeRequest(`${API_BASE}/accounts/usage/unmark`, {
+                    method: 'POST',
+                    body: JSON.stringify({ site, emails })
+                });
+                if (!resp.ok) throw new Error('取消标记失败');
+                const data = await resp.json();
+                showSuccess(data.message || '已取消标记');
+                // 更新未标记缓存
+                const set = unmarkedCache.get(site) || new Set();
+                emails.forEach(e => set.add(e));
+                unmarkedCache.set(site, set);
+            } catch (e) {
+                showError('取消标记失败: ' + e.message);
+            }
+        }
+
         async function queryUsageForSite() {
             const site = (document.getElementById('usageSite').value || '').trim();
             if (!site) { showError('请输入站点标识'); return; }
@@ -2488,7 +2513,8 @@
                 const header = `<div style=\"display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;\"><div style=\"font-weight:600; color:#334155;\">站点统计</div><button class=\"btn btn-secondary\" onclick=\"hideUsageResult()\">关闭</button></div>`;
                 const html = rows.map(r => {
                     const kv = Object.entries(r.by_status || {}).map(([k,v])=>`${k}:${v}`).join('，');
-                    return `<div class=\"usage-row\"><b>${r.site}</b> — 总计 ${r.total_marked}（${kv}）</div>`;
+                    const actions = `<span style=\"margin-left:8px;\"><button class=\"btn\" onclick=\"promptRenameSite('${r.site}')\">重命名</button><button class=\"btn\" style=\"margin-left:6px;color:#dc2626;\" onclick=\"confirmDeleteSite('${r.site}')\">删除</button></span>`;
+                    return `<div class=\"usage-row\"><b>${r.site}</b> — 总计 ${r.total_marked}（${kv}） ${actions}</div>`;
                 }).join('');
                 usediv.innerHTML = header + (html || '<div class=\"verification-empty\"><p>暂无站点统计</p></div>');
             } catch (e) {
@@ -2501,6 +2527,39 @@
             const usediv = document.getElementById('usageResult');
             usediv.style.display = 'none';
             usediv.innerHTML = '';
+        }
+
+        function openManageSites() {
+            showUsageSitesStats();
+        }
+
+        async function promptRenameSite(oldSite) {
+            const newSite = prompt(`将站点 “${oldSite}” 重命名为：`, oldSite);
+            if (!newSite) return;
+            if (newSite.trim() === oldSite) return;
+            try {
+                const resp = await makeRequest(`${API_BASE}/accounts/usage/rename`, {
+                    method: 'POST',
+                    body: JSON.stringify({ old_site: oldSite, new_site: newSite.trim() })
+                });
+                if (!resp.ok) throw new Error('重命名失败');
+                showSuccess('重命名成功');
+                await showUsageSitesStats();
+            } catch (e) {
+                showError('重命名失败: ' + e.message);
+            }
+        }
+
+        async function confirmDeleteSite(site) {
+            if (!confirm(`确定要从所有账户中删除站点 “${site}” 的标记吗？此操作不可恢复。`)) return;
+            try {
+                const resp = await makeRequest(`${API_BASE}/accounts/usage/site?site=${encodeURIComponent(site)}`, { method: 'DELETE' });
+                if (!resp.ok) throw new Error('删除失败');
+                showSuccess('删除成功');
+                await showUsageSitesStats();
+            } catch (e) {
+                showError('删除失败: ' + e.message);
+            }
         }
 
         async function markCurrentAccountUsage() {
