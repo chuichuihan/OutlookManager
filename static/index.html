@@ -1414,6 +1414,7 @@
                 <div id="accountList" class="account-list loading">
                     <p>加载中...</p>
                 </div>
+                <div id="accountPagination" class="pagination-bar"></div>
                 <div class="account-info">
                     <p>提示: 点击账户邮箱可直接登录该账户</p>
                 </div>
@@ -1807,6 +1808,8 @@
                 }
 
                 const allResults = [];
+                let processedAccounts = 0;
+                const totalAccounts = accounts.length;
 
                 for (let i = 0; i < chunks.length; i++) {
                     const chunk = chunks[i];
@@ -1820,13 +1823,16 @@
                     if (!response.ok) throw new Error(`第 ${i + 1}/${chunks.length} 批验证请求失败`);
                     const results = await response.json();
                     allResults.push(...results);
+                    processedAccounts += results.length;
 
                     // 分批渲染进度
                     renderVerificationResult(allResults);
+                    updateVerificationProgress(processedAccounts, totalAccounts, false);
                 }
 
                 // 全部完成后再渲染一次，确保UI一致
                 renderVerificationResult(allResults);
+                updateVerificationProgress(totalAccounts, totalAccounts, true);
             } catch (error) {
                 resultList.innerHTML = `<div class="verification-empty"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg><p>验证失败: ${error.message}</p></div>`;
             }
@@ -1962,6 +1968,33 @@
             container.innerHTML = html;
         }
 
+        function updateVerificationProgress(done, total, completed = false) {
+            const container = document.getElementById('verificationResultList');
+            if (!container) return;
+
+            // 清理旧的进度条
+            const old = document.getElementById('verificationProgressContainer');
+            if (old) old.remove();
+
+            if (completed) {
+                return; // 完成后不显示提示
+            }
+
+            const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+            const progressHtml = `
+                <div id="verificationProgressContainer" style="margin-top: 12px; padding: 12px; border-top: 1px solid #eee;">
+                    <div style="display: flex; justify-content: space-between; font-size: 12px; color: #6b7280; margin-bottom: 6px;">
+                        <span>验证进行中，未完成</span>
+                        <span>${done}/${total} (${percent}%)</span>
+                    </div>
+                    <div style="width: 100%; height: 8px; background: #e5e7eb; border-radius: 6px; overflow: hidden;">
+                        <div style="width: ${percent}%; height: 100%; background: #3b82f6; transition: width 200ms ease;"></div>
+                    </div>
+                </div>
+            `;
+            container.insertAdjacentHTML('beforeend', progressHtml);
+        }
+
         function toggleSelectAllVerified() {
             const isChecked = document.getElementById('selectAllVerified').checked;
             const checkboxes = document.querySelectorAll('.verification-checkbox-input:not([disabled])');
@@ -1970,6 +2003,13 @@
                 checkbox.checked = isChecked;
             });
         }
+
+        // 分页全局状态（避免与邮件分页的 currentPage 冲突）
+        let accountAllRecords = [];
+        let accountPage = 1;
+        let accountPageSize = 50; // 默认每页 50，可切换 50/100
+        let accountStatusFilter = 'all';
+        let accountSearchTerm = '';
 
         async function loadAccountList(forceCheck = false) {
             const accountList = document.getElementById('accountList');
@@ -1982,17 +2022,76 @@
                 
                 if (!response.ok) throw new Error('获取账户列表失败');
                 
-                const accounts = await response.json();
-                renderAccountList(accounts);
+                accountAllRecords = await response.json();
+                accountPage = 1; // 每次加载重置页码
+                renderAccountList(paginateAndFilter());
                 
                 // 更新账户数量显示
-                document.getElementById('accountCount').textContent = accounts.length;
+                document.getElementById('accountCount').textContent = accountAllRecords.length;
                 
             } catch (error) {
                 accountList.innerHTML = `<div class="error">加载失败: ${error.message}</div>`;
             }
         }
         
+        function paginateAndFilter() {
+            // 搜索 + 状态筛选
+            const filtered = (accountAllRecords || []).filter(acc => {
+                const okSearch = !accountSearchTerm || (acc.email || '').toLowerCase().includes(accountSearchTerm);
+                const okStatus = accountStatusFilter === 'all' || acc.status === accountStatusFilter;
+                return okSearch && okStatus;
+            });
+            // 计算分页
+            const total = filtered.length;
+            const totalPages = Math.max(1, Math.ceil(total / accountPageSize));
+            if (accountPage > totalPages) accountPage = totalPages;
+            const start = (accountPage - 1) * accountPageSize;
+            const end = start + accountPageSize;
+            const pageItems = filtered.slice(start, end);
+            // 渲染分页条
+            renderAccountPagination(totalPages, total);
+            return pageItems;
+        }
+
+        function renderAccountPagination(totalPages, totalItems) {
+            const bar = document.getElementById('accountPagination');
+            if (!bar) return;
+            if (totalItems === 0) {
+                bar.innerHTML = '';
+                return;
+            }
+            const pageOptions = [50, 100];
+            const prevDisabled = accountPage <= 1 ? 'disabled' : '';
+            const nextDisabled = accountPage >= totalPages ? 'disabled' : '';
+            bar.innerHTML = `
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-top:10px;">
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <button class="btn btn-secondary" ${prevDisabled} onclick="changeAccountPage(${Math.max(1, accountPage - 1)})">上一页</button>
+                        <span style="font-size:12px; color:#6b7280;">第 ${accountPage} / ${totalPages} 页（共 ${totalItems} 条）</span>
+                        <button class="btn btn-secondary" ${nextDisabled} onclick="changeAccountPage(${Math.min(totalPages, accountPage + 1)})">下一页</button>
+                    </div>
+                    <div style="display:flex; gap:6px; align-items:center;">
+                        <span style="font-size:12px; color:#6b7280;">每页</span>
+                        <select onchange="changeAccountPageSize(this.value)" class="account-select">
+                            ${pageOptions.map(v => `<option value="${v}" ${Number(accountPageSize)===v?'selected':''}>${v}</option>`).join('')}
+                        </select>
+                        <span style="font-size:12px; color:#6b7280;">条</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        function changeAccountPage(n) {
+            accountPage = Number(n);
+            renderAccountList(paginateAndFilter());
+        }
+
+        function changeAccountPageSize(v) {
+            accountPageSize = Number(v) || 50;
+            accountPage = 1;
+            renderAccountList(paginateAndFilter());
+        }
+
         function renderAccountList(accounts) {
             const container = document.getElementById('accountList');
             
@@ -2030,17 +2129,9 @@
         }
         
         function filterAccounts() {
-            const searchTerm = document.getElementById('accountSearch').value.toLowerCase();
-            const accountItems = document.querySelectorAll('#accountList .account-item');
-            
-            accountItems.forEach(item => {
-                const email = item.getAttribute('data-email').toLowerCase();
-                if (email.includes(searchTerm)) {
-                    item.classList.remove('filtered');
-                } else {
-                    item.classList.add('filtered');
-                }
-            });
+            accountSearchTerm = document.getElementById('accountSearch').value.toLowerCase();
+            accountPage = 1;
+            renderAccountList(paginateAndFilter());
         }
         
         function filterByStatus(status) {
@@ -2050,18 +2141,9 @@
             });
             document.querySelector(`.filter-btn[data-filter="${status}"]`).classList.add('active');
             
-            // 筛选账户列表
-            const accountItems = document.querySelectorAll('#accountList .account-item');
-            
-            accountItems.forEach(item => {
-                const itemStatus = item.getAttribute('data-status');
-                
-                if (status === 'all' || itemStatus === status) {
-                    item.classList.remove('filtered');
-                } else {
-                    item.classList.add('filtered');
-                }
-            });
+            accountStatusFilter = status;
+            accountPage = 1;
+            renderAccountList(paginateAndFilter());
         }
         
         function toggleSelectAll() {
