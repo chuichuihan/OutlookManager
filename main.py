@@ -1208,6 +1208,68 @@ async def rename_usage_site(
     return {"message": f"站点 {old_slug} 已重命名为 {new_slug}", **result}
 
 
+# 新增：返回邮箱与其被标记的站点映射
+class AccountUsageMapEntry(BaseModel):
+    email: EmailStr
+    sites: List[str]
+    updated_at_map: Optional[Dict[str, Optional[str]]] = None
+
+
+@app.get("/accounts/usage/map", response_model=List[AccountUsageMapEntry])
+async def get_accounts_usage_map_get(
+    emails: Optional[str] = Query(None, description="限定邮箱集合，逗号分隔"),
+    current_admin: bool = Depends(get_current_admin)
+):
+    """兼容旧版：GET 仍然可用，但建议改用 POST 以避免 URL 过长。"""
+    accounts = await get_all_accounts()
+    if emails:
+        target_emails = [e.strip() for e in emails.split(',') if e.strip()]
+        target_emails = [e for e in target_emails if e in accounts]
+    else:
+        target_emails = list(accounts.keys())
+
+    result: List[AccountUsageMapEntry] = []
+    for email_addr in target_emails:
+        record = accounts.get(email_addr) or {}
+        usage_map = (record.get('usage') or {}) if isinstance(record.get('usage'), dict) else {}
+        sites = sorted(list(usage_map.keys()))
+        updated_at_map: Dict[str, Optional[str]] = {}
+        for site_slug, entry in usage_map.items():
+            if isinstance(entry, dict):
+                updated_at_map[site_slug] = entry.get('updated_at')
+            else:
+                updated_at_map[site_slug] = None
+
+        result.append(AccountUsageMapEntry(email=email_addr, sites=sites, updated_at_map=updated_at_map))
+
+    return result
+
+
+class UsageMapRequest(BaseModel):
+    emails: List[EmailStr]
+
+
+@app.post("/accounts/usage/map", response_model=List[AccountUsageMapEntry])
+async def get_accounts_usage_map_post(
+    request: UsageMapRequest,
+    current_admin: bool = Depends(get_current_admin)
+):
+    accounts = await get_all_accounts()
+    target_emails = [e for e in request.emails if e in accounts]
+    result: List[AccountUsageMapEntry] = []
+    for email_addr in target_emails:
+        record = accounts.get(email_addr) or {}
+        usage_map = (record.get('usage') or {}) if isinstance(record.get('usage'), dict) else {}
+        sites = sorted(list(usage_map.keys()))
+        updated_at_map: Dict[str, Optional[str]] = {}
+        for site_slug, entry in usage_map.items():
+            if isinstance(entry, dict):
+                updated_at_map[site_slug] = entry.get('updated_at')
+            else:
+                updated_at_map[site_slug] = None
+        result.append(AccountUsageMapEntry(email=email_addr, sites=sites, updated_at_map=updated_at_map))
+    return result
+
 @app.get("/")
 async def root():
     """根路径 - 返回前端页面"""

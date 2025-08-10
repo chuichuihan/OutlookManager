@@ -898,6 +898,26 @@
             background: white;
             animation: fadeIn 0.5s ease-out;
         }
+
+        .site-tags {
+            display: inline-flex;
+            gap: 6px;
+            margin-left: auto;
+            flex-wrap: wrap;
+            align-items: center;
+            max-width: 50%;
+        }
+        .site-tag {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 6px;
+            border-radius: 999px;
+            font-size: 12px;
+            color: #334155;
+            background: #eef2ff;
+            border: 1px solid #e2e8f0;
+            white-space: nowrap;
+        }
         
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
@@ -1528,6 +1548,10 @@
         let totalEmails = 0;
         let savedAccounts = JSON.parse(localStorage.getItem('savedAccounts') || '{}');
         let adminPassword = localStorage.getItem('adminPassword');
+        // 缓存：邮箱 -> 站点（数组）
+        const accountSitesMap = new Map();
+        // 缓存：站点 -> 未标记邮箱集合（Set）
+        const unmarkedCache = new Map();
 
         function formatEmailDate(dateString) {
             try {
@@ -2153,7 +2177,9 @@
                 }
                 
                 accountPage = 1; // 每次加载重置页码
-                renderAccountList(paginateAndFilter());
+                const pageItems = paginateAndFilter();
+                await ensureSitesForEmails(pageItems.map(a => a.email));
+                renderAccountList(pageItems);
                 
                 // 更新账户数量显示
                 document.getElementById('accountCount').textContent = accountAllRecords.length;
@@ -2185,8 +2211,30 @@
             return pageItems;
         }
 
+        // 批量确保一批邮箱的站点数据已缓存（分片POST，避免URL过长）
+        async function ensureSitesForEmails(emails) {
+            const missing = (emails || []).filter(e => !accountSitesMap.has(e));
+            if (missing.length === 0) return;
+            const chunkSize = 100;
+            for (let i = 0; i < missing.length; i += chunkSize) {
+                const chunk = missing.slice(i, i + chunkSize);
+                try {
+                    const resp = await makeRequest(`${API_BASE}/accounts/usage/map`, {
+                        method: 'POST',
+                        body: JSON.stringify({ emails: chunk })
+                    });
+                    if (resp.ok) {
+                        const rows = await resp.json();
+                        rows.forEach(row => {
+                            accountSitesMap.set(row.email, Array.isArray(row.sites) ? row.sites : []);
+                        });
+                    }
+                } catch (_) { /* 忽略单批失败 */ }
+            }
+        }
+
         // 维护一个 {site -> Set(unmarkedEmails)} 的简单缓存，减少频繁请求
-        const unmarkedCache = new Map();
+        // 已在全局声明，此处不再重复声明
         function isEmailUnmarkedForSite(email, site) {
             const cacheEntry = unmarkedCache.get(site);
             if (!cacheEntry) return true; // 若无缓存，先不过滤，等待用户点击“筛选未标记”时填充
@@ -2221,15 +2269,19 @@
             `;
         }
 
-        function changeAccountPage(n) {
+        async function changeAccountPage(n) {
             accountPage = Number(n);
-            renderAccountList(paginateAndFilter());
+            const pageItems = paginateAndFilter();
+            await ensureSitesForEmails(pageItems.map(a => a.email));
+            renderAccountList(pageItems);
         }
 
-        function changeAccountPageSize(v) {
+        async function changeAccountPageSize(v) {
             accountPageSize = Number(v) || 50;
             accountPage = 1;
-            renderAccountList(paginateAndFilter());
+            const pageItems = paginateAndFilter();
+            await ensureSitesForEmails(pageItems.map(a => a.email));
+            renderAccountList(pageItems);
         }
 
         function renderAccountList(accounts) {
@@ -2251,12 +2303,15 @@
                 
                 // 添加延迟动画
                 const delay = index * 50;
+                const sites = accountSitesMap.get(account.email) || [];
+                const sitesHtml = sites.length > 0 ? `<div class="site-tags">${sites.slice(0, 6).map(s=>`<span class=\"site-tag\">${s}</span>`).join('')}${sites.length>6?`<span class=\"site-tag\">+${sites.length-6}</span>`:''}</div>` : '';
                 
                 html += `
                 <div class="account-item" data-email="${account.email}" data-status="${account.status}" style="animation-delay: ${delay}ms;">
                     <input type="checkbox" class="account-checkbox" data-email="${account.email}">
                     <span class="account-email" onclick="loginWithAccount('${account.email}')">${account.email}</span>
                     <span class="account-status ${statusClass}">${statusText}</span>
+                    ${sitesHtml}
                 </div>
                 `;
             });
@@ -2268,13 +2323,15 @@
             document.getElementById('selectAllAccounts').checked = false;
         }
         
-        function filterAccounts() {
+        async function filterAccounts() {
             accountSearchTerm = document.getElementById('accountSearch').value.toLowerCase();
             accountPage = 1;
-            renderAccountList(paginateAndFilter());
+            const pageItems = paginateAndFilter();
+            await ensureSitesForEmails(pageItems.map(a => a.email));
+            renderAccountList(pageItems);
         }
         
-        function filterByStatus(status) {
+        async function filterByStatus(status) {
             // 更新按钮状态
             document.querySelectorAll('.filter-btn').forEach(btn => {
                 btn.classList.remove('active');
@@ -2283,7 +2340,9 @@
             
             accountStatusFilter = status;
             accountPage = 1;
-            renderAccountList(paginateAndFilter());
+            const pageItems = paginateAndFilter();
+            await ensureSitesForEmails(pageItems.map(a => a.email));
+            renderAccountList(pageItems);
         }
 
         // ============== 未标记筛选（按站点） ==============
@@ -2304,12 +2363,16 @@
                 } catch (_) { /* 忽略错误，仍按本地数据先行筛选 */ }
             }
             accountPage = 1;
-            renderAccountList(paginateAndFilter());
+            const pageItems = paginateAndFilter();
+            await ensureSitesForEmails(pageItems.map(a => a.email));
+            renderAccountList(pageItems);
         }
-        function clearUnmarkedFilter() {
+        async function clearUnmarkedFilter() {
             unmarkedSiteFilter = null;
             accountPage = 1;
-            renderAccountList(paginateAndFilter());
+            const pageItems = paginateAndFilter();
+            await ensureSitesForEmails(pageItems.map(a => a.email));
+            renderAccountList(pageItems);
         }
         
         function toggleSelectAll() {
@@ -2434,6 +2497,12 @@
                 if (!resp.ok) throw new Error('标记失败');
                 const data = await resp.json();
                 showSuccess(data.message || '标记成功');
+                // 更新本地站点映射缓存并刷新视图
+                emails.forEach(e => {
+                    const list = accountSitesMap.get(e) || [];
+                    if (!list.includes(site)) accountSitesMap.set(e, [...list, site]);
+                });
+                renderAccountList(paginateAndFilter());
             } catch (e) {
                 showError('标记失败: ' + e.message);
             }
@@ -2457,6 +2526,12 @@
                 const set = unmarkedCache.get(site) || new Set();
                 emails.forEach(e => set.add(e));
                 unmarkedCache.set(site, set);
+                // 更新站点映射缓存并刷新视图
+                emails.forEach(e => {
+                    const list = accountSitesMap.get(e) || [];
+                    accountSitesMap.set(e, list.filter(s => s !== site));
+                });
+                renderAccountList(paginateAndFilter());
             } catch (e) {
                 showError('取消标记失败: ' + e.message);
             }
@@ -2592,6 +2667,10 @@
                 if (!resp.ok) throw new Error('标记失败');
                 
                 showSuccess(`✅ 已为 ${email} 标记 ${site} 为 ${status}`);
+                // 更新站点映射缓存并刷新
+                const list = accountSitesMap.get(email) || [];
+                if (!list.includes(site)) accountSitesMap.set(email, [...list, site]);
+                renderAccountList(paginateAndFilter());
                 
                 // 若当前筛选显示"未标记"，且该邮箱被标记，则更新缓存并重绘列表
                 if (unmarkedSiteFilter === site) {
