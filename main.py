@@ -847,32 +847,47 @@ async def register_single_account(credentials: AccountCredentials) -> AccountRes
 @app.get("/accounts", response_model=List[AccountStatus])
 async def get_accounts(
     check_status: bool = False,
+    emails: Optional[str] = None,
     current_admin: bool = Depends(get_current_admin)
 ):
-    """获取所有账户列表，可选择检查账户活性状态
+    """获取账户列表，可选择检查账户活性状态
     
     Args:
         check_status: 是否检查账户活性状态
+        emails: 指定要检查的邮箱列表，用逗号分隔。如果为空且check_status=True，则检查所有账户
     """
     accounts = await get_all_accounts()
     
+    # 确定要处理的邮箱列表
+    target_emails = []
+    if emails:
+        # 解析指定的邮箱列表
+        target_emails = [email.strip() for email in emails.split(',') if email.strip()]
+        # 过滤出存在的邮箱
+        target_emails = [email for email in target_emails if email in accounts]
+    else:
+        # 使用所有邮箱
+        target_emails = list(accounts.keys())
+    
     if not check_status:
         # 仅返回邮箱列表，不检查状态
-        return [AccountStatus(email=email) for email in accounts.keys()]
+        return [AccountStatus(email=email) for email in target_emails]
     
-    # 并行检查所有账户的活性
+    # 并行检查指定账户的活性
     result = []
     tasks = []
     
-    for email, account_data in accounts.items():
-        credentials = AccountCredentials(
-            email=email,
-            refresh_token=account_data['refresh_token'],
-            client_id=account_data['client_id']
-        )
-        # 创建异步任务
-        task = asyncio.create_task(check_account_status(credentials))
-        tasks.append((email, task))
+    for email in target_emails:
+        if email in accounts:
+            account_data = accounts[email]
+            credentials = AccountCredentials(
+                email=email,
+                refresh_token=account_data['refresh_token'],
+                client_id=account_data['client_id']
+            )
+            # 创建异步任务
+            task = asyncio.create_task(check_account_status(credentials))
+            tasks.append((email, task))
     
     # 等待所有任务完成
     for email, task in tasks:

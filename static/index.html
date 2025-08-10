@@ -927,6 +927,15 @@
             accent-color: #667eea;
             cursor: pointer;
         }
+
+        .animate-spin {
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
         
         .account-email {
             flex: 1;
@@ -1391,7 +1400,7 @@
                 <div class="account-header">
                     <h3 class="account-title">账户管理 <span class="account-count" id="accountCount">0</span></h3>
                     <div class="account-actions">
-                        <button class="btn btn-icon" onclick="loadAccountList(true)" title="刷新状态">
+                        <button class="btn btn-icon" onclick="refreshAccountStatus()" title="刷新状态" id="refreshStatusBtn">
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
                         </button>
                         <button class="btn btn-icon btn-danger" onclick="deleteSelectedAccounts()" title="删除选中">
@@ -2017,18 +2026,96 @@
         let accountStatusFilter = 'all';
         let accountSearchTerm = '';
 
+        // 获取当前选中的邮箱列表
+        function getSelectedEmails() {
+            const checkboxes = document.querySelectorAll('#accountList .account-item:not(.filtered) .account-checkbox:checked');
+            return Array.from(checkboxes).map(cb => cb.dataset.email);
+        }
+
+        // 智能刷新状态功能
+        async function refreshAccountStatus() {
+            const selectedEmails = getSelectedEmails();
+            const refreshBtn = document.getElementById('refreshStatusBtn');
+            
+            // 防止重复点击
+            if (refreshBtn.disabled) return;
+            
+            refreshBtn.disabled = true;
+            refreshBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="animate-spin"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>';
+            
+            try {
+                if (selectedEmails.length > 0) {
+                    showSuccess(`开始验证选中的 ${selectedEmails.length} 个账户状态...`);
+                } else {
+                    showSuccess('开始验证所有账户状态...');
+                }
+                
+                await loadAccountList(true);
+                
+                const message = selectedEmails.length > 0 
+                    ? `已完成验证选中的 ${selectedEmails.length} 个账户状态` 
+                    : '已完成验证所有账户状态';
+                showSuccess(message);
+                
+            } catch (error) {
+                showError('状态验证失败: ' + error.message);
+            } finally {
+                // 恢复按钮状态
+                refreshBtn.disabled = false;
+                refreshBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>';
+            }
+        }
+
         async function loadAccountList(forceCheck = false) {
             const accountList = document.getElementById('accountList');
             accountList.className = 'account-list loading';
-            accountList.innerHTML = '<p>加载中...</p>';
+            
+            let selectedEmails = [];
+            if (forceCheck) {
+                // 获取当前选中的邮箱
+                selectedEmails = getSelectedEmails();
+                if (selectedEmails.length > 0) {
+                    accountList.innerHTML = `<p>正在验证选中的 ${selectedEmails.length} 个账户...</p>`;
+                } else {
+                    accountList.innerHTML = '<p>正在验证所有账户...</p>';
+                }
+            } else {
+                accountList.innerHTML = '<p>加载中...</p>';
+            }
             
             try {
-                // 调用后端API获取账户列表及其状态
-                const response = await makeRequest(`${API_BASE}/accounts?check_status=${forceCheck}`);
+                // 构建请求URL
+                let url = `${API_BASE}/accounts?check_status=${forceCheck}`;
+                if (forceCheck && selectedEmails.length > 0) {
+                    // 如果有选中邮箱，添加到请求参数中
+                    url += '&emails=' + encodeURIComponent(selectedEmails.join(','));
+                }
+                
+                const response = await makeRequest(url);
                 
                 if (!response.ok) throw new Error('获取账户列表失败');
                 
-                accountAllRecords = await response.json();
+                const newAccountData = await response.json();
+                
+                if (forceCheck && selectedEmails.length > 0) {
+                    // 部分验证：更新现有数据中对应账户的状态
+                    if (accountAllRecords && accountAllRecords.length > 0) {
+                        const updatedEmails = new Set(newAccountData.map(acc => acc.email));
+                        accountAllRecords = accountAllRecords.map(existingAcc => {
+                            if (updatedEmails.has(existingAcc.email)) {
+                                const updated = newAccountData.find(newAcc => newAcc.email === existingAcc.email);
+                                return updated || existingAcc;
+                            }
+                            return existingAcc;
+                        });
+                    } else {
+                        accountAllRecords = newAccountData;
+                    }
+                } else {
+                    // 全量加载
+                    accountAllRecords = newAccountData;
+                }
+                
                 accountPage = 1; // 每次加载重置页码
                 renderAccountList(paginateAndFilter());
                 
